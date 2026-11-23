@@ -17,19 +17,16 @@ from shapely.geometry import Polygon, MultiPolygon, mapping, shape
 from shapely.ops import unary_union
 
 API_HOST = "https://mv4nmv3f8m.re.qweatherapi.com"
-# 建议在 GitHub Secrets 中配置 WEATHER_API_KEY，这里作为回退
+# 优先读取环境变量中的 API Key，如果没有则使用默认值
 API_KEY = os.environ.get("WEATHER_API_KEY", "209081019b884ce3bed90ad77ce8c12f")
 
 CITY_GEOJSON_URL = "https://geo.datav.aliyun.com/areas_v3/bound/440000_full.json"
 CITY_BOUNDARY_PATH = "guangdong_cities.geojson"
 BORDER_CACHE_PATH = "gd_inland_borders_cache.json"
 
-# 界線向東微調約 1 公里（+0.01° 經度）
 EAST_SHIFT_DEG = 0.01
-# 過濾島嶼的面積門檻（平方度）
 MIN_MAINLAND_AREA_DEG2 = 0.03
 
-# 溫度分級標準
 TEMP_TIERS = [
     (36.0, 99.0, "#FF8A80", "極端酷熱"),
     (32.5, 36.0, "#FFB4A2", "酷熱"),
@@ -95,17 +92,13 @@ def get_or_build_inland_borders(mainland_gdf: gpd.GeoDataFrame, cache_path: str)
             raw = json.loads(p.read_text(encoding="utf-8"))
             return shape(raw["city_border"]), shape(raw["provincial_border"])
         except Exception: pass
-
     ocean_feat = cfeature.NaturalEarthFeature("physical", "ocean", "10m")
     ocean_geoms = [g for g in ocean_feat.geometries() if g is not None and not g.is_empty]
     ocean_union = unary_union(ocean_geoms).buffer(0.015) if ocean_geoms else None
-
     city_lines = unary_union([geom.boundary for geom in mainland_gdf.geometry if geom is not None])
     if ocean_union is not None: city_lines = city_lines.difference(ocean_union)
-
     gd_union = unary_union(mainland_gdf.geometry)
     prov_lines = gd_union.boundary.difference(ocean_union) if ocean_union is not None else gd_union.boundary
-
     try:
         payload = {"city_border": mapping(city_lines), "provincial_border": mapping(prov_lines)}
         p.write_text(json.dumps(payload), encoding="utf-8")
@@ -149,7 +142,6 @@ def main():
     t_total = time.perf_counter()
     print("[進度] 1. 準備市界資料...", flush=True)
     city_path = download_city_boundary(CITY_BOUNDARY_PATH, force=False)
-
     records, obs_time, total_stations, done_count = [], "", len(STATIONS), 0
 
     print(f"[進度] 2. 查詢 {total_stations} 個地級市站點氣溫...", flush=True)
@@ -176,7 +168,7 @@ def main():
     lon_min, lon_max = 109.5, 117.5
     lat_min, lat_max = 20.0, 25.6
 
-    # 修改字体，适配 Linux 环境（优先使用 WenQuanYi Micro Hei，次选繁体）
+    # Linux 服务器中文字体适配
     plt.rcParams["font.sans-serif"] = ["WenQuanYi Micro Hei", "Microsoft JhengHei", "SimHei", "Arial Unicode MS"]
     plt.rcParams["axes.unicode_minus"] = False
 
@@ -201,7 +193,6 @@ def main():
                 shifted = translate(geom, xoff=EAST_SHIFT_DEG, yoff=0.0) if geom is not None else None
                 filtered = filter_mainland_geometry(shifted, MIN_MAINLAND_AREA_DEG2)
                 if filtered is not None and not filtered.is_empty: mainland_geoms.append(filtered)
-
             if mainland_geoms:
                 mainland_gdf = gpd.GeoDataFrame(geometry=mainland_geoms, crs="EPSG:4326")
                 mainland_gdf = mainland_gdf.cx[lon_min:lon_max, lat_min:lat_max]
@@ -212,7 +203,6 @@ def main():
             print(f"處理市界與省界失敗：{e}", flush=True)
 
     draw_items = declutter_positions(records)
-
     for name, lat, lon, draw_lon, draw_lat, t_val in draw_items:
         bg_color, fg_color = get_temp_c(t_val)
         label_str = f"{t_val:g}"
@@ -240,7 +230,6 @@ def main():
     plt.savefig(output_path, dpi=150)
     print(f"[進度] 4. 畫圖與存檔完成（{time.perf_counter() - t_map:.2f}s）", flush=True)
     print(f"[完成] 已輸出 {output_path}（共 {len(records)} 個有效城市，總耗時 {time.perf_counter() - t_total:.2f}s）", flush=True)
-    # plt.show() # 服务器环境不需要且会引发警告，已注释掉
     plt.close(fig)
 
 if __name__ == "__main__":

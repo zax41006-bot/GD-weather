@@ -1,7 +1,7 @@
 name: 每小时更新广东天气图
 
 on:
-  workflow_dispatch: # 关键：允许外部 API（cron-job.org）或手动触发
+  workflow_dispatch: # 允许外部 API 和手动触发
 
 permissions:
   contents: write # 允许 Action 把生成的图片提交回仓库
@@ -32,13 +32,17 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 6. 运行你的天气脚本
-        run: python your_script_name.py  # ← 替换为你的 .py 文件名，例如 gd_weather.py
+      - name: 6. 运行天气脚本
+        env:
+          # 如果你在 GitHub 设置里添加了 WEATHER_API_KEY 这个 Secret，这里就能读到
+          WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
+        run: python main.py
 
       - name: 7. 自动提交更新后的图片
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add guangdong_temp_latest.png  # 脚本中保存的图片文件名
+          git add guangdong_temp_latest.png
+          # 如果图片没有变化就不提交，避免产生无意义的记录
           git diff --cached --quiet || git commit -m "chore: auto-update weather map [skip ci]"
           git push

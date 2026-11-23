@@ -1,9 +1,7 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from pathlib import Path
 import time
 from datetime import datetime
-import os
 import requests
 import matplotlib
 matplotlib.use('Agg') 
@@ -16,8 +14,9 @@ from shapely.affinity import translate
 from shapely.geometry import Polygon, MultiPolygon, mapping, shape
 from shapely.ops import unary_union
 
+# ⚠️ 注意：如果专属 Host 一直被拦截，可以尝试换成公共节点
+# 但首选还是你的专属 Host
 API_HOST = "https://mv4nmv3f8m.re.qweatherapi.com"
-# 直接把你的真实 Key 写死在代码里
 API_KEY = "209081019b884ce3bed90ad77ce8c12f"
 
 CITY_GEOJSON_URL = "https://geo.datav.aliyun.com/areas_v3/bound/440000_full.json"
@@ -64,7 +63,7 @@ STATIONS = [
 def download_city_boundary(save_path: str, force: bool = False) -> Path | None:
     path = Path(save_path)
     if path.exists() and not force: return path
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer": "https://datav.aliyun.com/"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         resp = requests.get(CITY_GEOJSON_URL, headers=headers, timeout=15)
         resp.raise_for_status()
@@ -109,28 +108,28 @@ def fetch_now_by_coord(session: requests.Session, name: str, lat: float, lon: fl
     url = f"{API_HOST}/v7/weather/now"
     params = {"location": f"{lon:.4f},{lat:.4f}", "key": API_KEY, "lang": "zh-hant", "unit": "m"}
     
-    # 🚨 关键修复：伪装成正常的浏览器，防止被和风天气防火墙拦截
+    # 伪装成标准的浏览器请求
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json"
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip, deflate, br"
     }
     
-    for attempt in range(3): # 增加 3 次重试机制，防止网络波动
-        try:
-            resp = session.get(url, params=params, headers=headers, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("code") == "200" and "now" in data:
-                now = data["now"]
-                return name, lat, lon, float(now["temp"]), now.get("obsTime", "")
-            else:
-                print(f"查詢 {name} 失敗，API 返回代碼: {data.get('code')}", flush=True)
-                break
-        except Exception as e:
-            if attempt == 2:
-                print(f"查詢 {name} 徹底失敗：{e}", flush=True)
-            else:
-                time.sleep(1) # 失败后等 1 秒重试
+    try:
+        resp = session.get(url, params=params, headers=headers, timeout=10)
+        # 如果状态码不是 200，把真实的报错内容打印出来
+        if resp.status_code != 200:
+            print(f"❌ {name} 失败，HTTP状态码: {resp.status_code}，服务器返回: {resp.text}", flush=True)
+            return None
+            
+        data = resp.json()
+        if data.get("code") == "200" and "now" in data:
+            now = data["now"]
+            return name, lat, lon, float(now["temp"]), now.get("obsTime", "")
+        else:
+            print(f"❌ {name} 失败，和风返回代码: {data.get('code')}，详情: {data}", flush=True)
+    except Exception as e:
+        print(f"❌ {name} 请求异常：{e}", flush=True)
     return None
 
 def declutter_positions(records, min_dx=0.28, min_dy=0.18, step_x=0.16, step_y=0.12):
@@ -160,7 +159,6 @@ def main():
 
     print(f"[進度] 2. 查詢 {len(STATIONS)} 個地級市站點氣溫...", flush=True)
     
-    # 单线程顺序请求，绝对不触发 QPS 限制
     with requests.Session() as session:
         for i, (name, lat, lon) in enumerate(STATIONS):
             res = fetch_now_by_coord(session, name, lat, lon)
@@ -168,15 +166,15 @@ def main():
                 _, _, _, t_val, o_time = res
                 records.append((name, lat, lon, t_val))
                 if o_time and not obs_time: obs_time = o_time
-            time.sleep(0.3) # 每次请求间隔 0.3 秒，稳如老狗
+            time.sleep(0.5) # 增加间隔，防止并发限制
 
     if not records:
-        print("沒有抓到有效站點資料，請檢查 API 回傳訊息。", flush=True)
+        print("沒有抓到有效站點資料，請檢查上方日誌中的錯誤原因。", flush=True)
         return
 
+    # ... (后面的绘图逻辑保持不变)
     lon_min, lon_max = 109.5, 117.5
     lat_min, lat_max = 20.0, 25.6
-
     plt.rcParams["font.sans-serif"] = ["WenQuanYi Micro Hei", "Microsoft JhengHei", "SimHei", "Arial Unicode MS"]
     plt.rcParams["axes.unicode_minus"] = False
 
@@ -185,7 +183,6 @@ def main():
     fig = plt.figure(figsize=(13, 9.5), dpi=150)
     ax = plt.axes(projection=proj)
     ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=proj)
-
     ax.add_feature(cfeature.OCEAN.with_scale("10m"), facecolor="#C5E1F5")
     ax.add_feature(cfeature.LAND.with_scale("10m"), facecolor="#F7EED6")
     ax.add_feature(cfeature.COASTLINE.with_scale("10m"), linewidth=0.9, edgecolor="#555555", zorder=2.3)
@@ -219,17 +216,14 @@ def main():
     legend_handles = [mpatches.Patch(facecolor=color, edgecolor="none", label=label) for _, _, color, label in TEMP_TIERS]
     leg = ax.legend(handles=legend_handles, title="圖例", loc="upper right", frameon=True, facecolor="white", edgecolor="#888888", framealpha=0.92, fontsize=9, title_fontsize=10.5)
     leg.get_title().set_ha("center")
-
     update_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     if obs_time:
         try:
             dt = datetime.fromisoformat(obs_time)
             update_str = dt.strftime("%Y-%m-%d %H:%M")
         except ValueError: pass
-
     ax.text(0.025, 0.03, f"更新時間：{update_str}\n制圖：港澳天氣站", transform=ax.transAxes, fontsize=9.5, color="#222222",
             bbox=dict(boxstyle="round,pad=0.45", facecolor="white", edgecolor="#AAAAAA", alpha=0.92), zorder=5)
-
     ax.set_title("廣東現時氣溫分佈圖", fontsize=15, fontweight="bold", pad=14)
     plt.tight_layout()
 

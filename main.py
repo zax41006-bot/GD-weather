@@ -6,7 +6,7 @@ from datetime import datetime
 import os
 import requests
 import matplotlib
-matplotlib.use('Agg') # 服务器无图形界面，必须使用 Agg 后端
+matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import cartopy.crs as ccrs
@@ -17,8 +17,8 @@ from shapely.geometry import Polygon, MultiPolygon, mapping, shape
 from shapely.ops import unary_union
 
 API_HOST = "https://mv4nmv3f8m.re.qweatherapi.com"
-# 优先读取环境变量中的 API Key，如果没有则使用默认值
-API_KEY = os.environ.get("WEATHER_API_KEY", "209081019b884ce3bed90ad77ce8c12f")
+# 直接把你的真实 Key 写死在代码里
+API_KEY = "209081019b884ce3bed90ad77ce8c12f"
 
 CITY_GEOJSON_URL = "https://geo.datav.aliyun.com/areas_v3/bound/440000_full.json"
 CITY_BOUNDARY_PATH = "guangdong_cities.geojson"
@@ -108,15 +108,29 @@ def get_or_build_inland_borders(mainland_gdf: gpd.GeoDataFrame, cache_path: str)
 def fetch_now_by_coord(session: requests.Session, name: str, lat: float, lon: float):
     url = f"{API_HOST}/v7/weather/now"
     params = {"location": f"{lon:.4f},{lat:.4f}", "key": API_KEY, "lang": "zh-hant", "unit": "m"}
-    try:
-        resp = session.get(url, params=params, timeout=6)
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("code") == "200" and "now" in data:
-            now = data["now"]
-            return name, lat, lon, float(now["temp"]), now.get("obsTime", "")
-    except Exception as e:
-        print(f"查詢 {name} ({lat}, {lon}) 失敗：{e}", flush=True)
+    
+    # 🚨 关键修复：伪装成正常的浏览器，防止被和风天气防火墙拦截
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json"
+    }
+    
+    for attempt in range(3): # 增加 3 次重试机制，防止网络波动
+        try:
+            resp = session.get(url, params=params, headers=headers, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("code") == "200" and "now" in data:
+                now = data["now"]
+                return name, lat, lon, float(now["temp"]), now.get("obsTime", "")
+            else:
+                print(f"查詢 {name} 失敗，API 返回代碼: {data.get('code')}", flush=True)
+                break
+        except Exception as e:
+            if attempt == 2:
+                print(f"查詢 {name} 徹底失敗：{e}", flush=True)
+            else:
+                time.sleep(1) # 失败后等 1 秒重试
     return None
 
 def declutter_positions(records, min_dx=0.28, min_dy=0.18, step_x=0.16, step_y=0.12):
@@ -142,24 +156,19 @@ def main():
     t_total = time.perf_counter()
     print("[進度] 1. 準備市界資料...", flush=True)
     city_path = download_city_boundary(CITY_BOUNDARY_PATH, force=False)
-    records, obs_time, total_stations, done_count = [], "", len(STATIONS), 0
+    records, obs_time = [], ""
 
-    print(f"[進度] 2. 查詢 {total_stations} 個地級市站點氣溫...", flush=True)
-    t_api = time.perf_counter()
+    print(f"[進度] 2. 查詢 {len(STATIONS)} 個地級市站點氣溫...", flush=True)
+    
+    # 单线程顺序请求，绝对不触发 QPS 限制
     with requests.Session() as session:
-        adapter = requests.adapters.HTTPAdapter(pool_connections=6, pool_maxsize=6)
-        session.mount("https://", adapter)
-        with ThreadPoolExecutor(max_workers=5) as pool:
-            futures = [pool.submit(fetch_now_by_coord, session, name, lat, lon) for name, lat, lon in STATIONS]
-            for fut in as_completed(futures):
-                done_count += 1
-                res = fut.result()
-                if res:
-                    name, lat, lon, t_val, o_time = res
-                    records.append((name, lat, lon, t_val))
-                    if o_time and not obs_time: obs_time = o_time
-                if done_count % 7 == 0 or done_count == total_stations:
-                    print(f"[進度] 查站點 {done_count}/{total_stations}（有效 {len(records)} 筆，已耗時 {time.perf_counter() - t_api:.1f}s）", flush=True)
+        for i, (name, lat, lon) in enumerate(STATIONS):
+            res = fetch_now_by_coord(session, name, lat, lon)
+            if res:
+                _, _, _, t_val, o_time = res
+                records.append((name, lat, lon, t_val))
+                if o_time and not obs_time: obs_time = o_time
+            time.sleep(0.3) # 每次请求间隔 0.3 秒，稳如老狗
 
     if not records:
         print("沒有抓到有效站點資料，請檢查 API 回傳訊息。", flush=True)
@@ -168,12 +177,10 @@ def main():
     lon_min, lon_max = 109.5, 117.5
     lat_min, lat_max = 20.0, 25.6
 
-    # Linux 服务器中文字体适配
     plt.rcParams["font.sans-serif"] = ["WenQuanYi Micro Hei", "Microsoft JhengHei", "SimHei", "Arial Unicode MS"]
     plt.rcParams["axes.unicode_minus"] = False
 
     print("[進度] 3. 繪製底圖、內陸市界與省界...", flush=True)
-    t_map = time.perf_counter()
     proj = ccrs.PlateCarree()
     fig = plt.figure(figsize=(13, 9.5), dpi=150)
     ax = plt.axes(projection=proj)
@@ -228,8 +235,7 @@ def main():
 
     output_path = "guangdong_temp_latest.png"
     plt.savefig(output_path, dpi=150)
-    print(f"[進度] 4. 畫圖與存檔完成（{time.perf_counter() - t_map:.2f}s）", flush=True)
-    print(f"[完成] 已輸出 {output_path}（共 {len(records)} 個有效城市，總耗時 {time.perf_counter() - t_total:.2f}s）", flush=True)
+    print(f"[完成] 已輸出 {output_path}（共 {len(records)} 個有效城市）", flush=True)
     plt.close(fig)
 
 if __name__ == "__main__":

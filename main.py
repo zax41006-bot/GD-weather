@@ -14,10 +14,11 @@ from shapely.affinity import translate
 from shapely.geometry import Polygon, MultiPolygon, mapping, shape
 from shapely.ops import unary_union
 
-# ⚠️ 注意：如果专属 Host 一直被拦截，可以尝试换成公共节点
-# 但首选还是你的专属 Host
+# ==========================================
+# 🚨 这里把 Key 写死了，绝对不再读环境变量
+# ==========================================
 API_HOST = "https://mv4nmv3f8m.re.qweatherapi.com"
-API_KEY = "209081019b884ce3bed90ad77ce8c12f"
+API_KEY = "209081019b884ce3bed90ad77ce8c12f" 
 
 CITY_GEOJSON_URL = "https://geo.datav.aliyun.com/areas_v3/bound/440000_full.json"
 CITY_BOUNDARY_PATH = "guangdong_cities.geojson"
@@ -63,7 +64,7 @@ STATIONS = [
 def download_city_boundary(save_path: str, force: bool = False) -> Path | None:
     path = Path(save_path)
     if path.exists() and not force: return path
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
         resp = requests.get(CITY_GEOJSON_URL, headers=headers, timeout=15)
         resp.raise_for_status()
@@ -108,18 +109,19 @@ def fetch_now_by_coord(session: requests.Session, name: str, lat: float, lon: fl
     url = f"{API_HOST}/v7/weather/now"
     params = {"location": f"{lon:.4f},{lat:.4f}", "key": API_KEY, "lang": "zh-hant", "unit": "m"}
     
-    # 伪装成标准的浏览器请求
+    # 终极伪装请求头
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json",
-        "Accept-Encoding": "gzip, deflate, br"
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Connection": "keep-alive"
     }
     
     try:
         resp = session.get(url, params=params, headers=headers, timeout=10)
-        # 如果状态码不是 200，把真实的报错内容打印出来
+        # 我们不要 raise，直接检查状态码，以便打印最详细的信息
         if resp.status_code != 200:
-            print(f"❌ {name} 失败，HTTP状态码: {resp.status_code}，服务器返回: {resp.text}", flush=True)
+            print(f"❌ {name} 请求失败，状态码: {resp.status_code}，详细响应: {resp.text}", flush=True)
             return None
             
         data = resp.json()
@@ -127,7 +129,7 @@ def fetch_now_by_coord(session: requests.Session, name: str, lat: float, lon: fl
             now = data["now"]
             return name, lat, lon, float(now["temp"]), now.get("obsTime", "")
         else:
-            print(f"❌ {name} 失败，和风返回代码: {data.get('code')}，详情: {data}", flush=True)
+            print(f"❌ {name} 失败，和风返回: {resp.text}", flush=True)
     except Exception as e:
         print(f"❌ {name} 请求异常：{e}", flush=True)
     return None
@@ -166,13 +168,13 @@ def main():
                 _, _, _, t_val, o_time = res
                 records.append((name, lat, lon, t_val))
                 if o_time and not obs_time: obs_time = o_time
-            time.sleep(0.5) # 增加间隔，防止并发限制
+            time.sleep(0.3) # 增加间隔，防止并发限制
 
     if not records:
-        print("沒有抓到有效站點資料，請檢查上方日誌中的錯誤原因。", flush=True)
+        print("沒有抓到有效站點資料，請檢查上方日誌中的詳細原因。", flush=True)
         return
 
-    # ... (后面的绘图逻辑保持不变)
+    # ... (后面的绘图代码保持不变)
     lon_min, lon_max = 109.5, 117.5
     lat_min, lat_max = 20.0, 25.6
     plt.rcParams["font.sans-serif"] = ["WenQuanYi Micro Hei", "Microsoft JhengHei", "SimHei", "Arial Unicode MS"]

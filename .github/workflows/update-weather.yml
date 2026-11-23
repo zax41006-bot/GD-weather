@@ -1,10 +1,12 @@
 name: 每小时更新广东天气图
 
 on:
-  workflow_dispatch: # 允许外部 API 和手动触发
+  workflow_dispatch:
+  schedule:
+    - cron: '5 * * * *'
 
 permissions:
-  contents: write # ⚠️ 关键：必须在这里声明写入权限，解决 exit code 128 报错
+  contents: write
 
 jobs:
   build-and-commit:
@@ -18,7 +20,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgeos-dev libproj-dev proj-data proj-bin libgdal-dev
 
-      - name: 3. 安装中文字体（防止图中文字变方块）
+      - name: 3. 安装中文字体
         run: |
           sudo apt-get install -y fonts-wqy-microhei fonts-wqy-zenhei
 
@@ -34,15 +36,18 @@ jobs:
 
       - name: 6. 运行天气脚本
         env:
-          # 如果你在 GitHub Settings 里配置了 Secret，这里会自动读取
+          QWEATHER_API_KEY: ${{ secrets.QWEATHER_API_KEY }}
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
         run: python main.py
 
       - name: 7. 自动提交更新后的图片
         run: |
+          if [ ! -f "guangdong_temp_latest.png" ]; then
+            echo "未找到 guangdong_temp_latest.png，跳过提交"
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add guangdong_temp_latest.png
-          # 如果图片没有发生变化，就不提交，防止产生死循环
           git diff --cached --quiet || git commit -m "chore: auto-update weather map [skip ci]"
           git push
